@@ -1,0 +1,7 @@
+{
+  "name": "AI Horse Racing Predictor",
+  "description": "An advanced AI-powered horse racing prediction engine with Live Voice interaction and expert reputation tracking.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

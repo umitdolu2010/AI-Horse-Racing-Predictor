@@ -49,7 +49,7 @@ const SectionTitle: React.FC<{ icon: React.ReactNode; title: string; onActionCli
             <button 
                 onClick={onActionClick}
                 className="p-1 hover:bg-gray-800 rounded-lg text-cyan-500 transition-colors"
-                title="Yeni Ekle"
+                title="İşlem"
             >
                 {actionIcon || <PlusIcon className="w-4 h-4" />}
             </button>
@@ -73,6 +73,9 @@ const App: React.FC = () => {
     const [newSourceName, setNewSourceName] = useState('');
     const [newSourceUrl, setNewSourceUrl] = useState('');
 
+    // Leg Config State
+    const [showLegConfig, setShowLegConfig] = useState(false);
+
     const [obsNote, setObsNote] = useState('');
     const [chatHistory, setChatHistory] = useLocalStorage<ChatMessage[]>('chatHistory', [{ id: '1', sender: 'system', text: 'Sistem Hazır. Linkleri analiz edebilir veya sesli konuşabiliriz.' }]);
     const [userInput, setUserInput] = useState<string>('');
@@ -83,6 +86,7 @@ const App: React.FC = () => {
     const chatEndRef = useRef<HTMLDivElement>(null);
     const sessionRef = useRef<any>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -133,6 +137,61 @@ const App: React.FC = () => {
         setChatHistory(prev => [...prev, { id: Date.now().toString(), sender: 'system', text: `${newSourceName} kanalı uzman listesine eklendi.` }]);
     };
 
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            try {
+                const bstr = evt.target?.result;
+                const wb = (window as any).XLSX.read(bstr, { type: 'binary' });
+                const wsname = wb.SheetNames[0];
+                const ws = wb.Sheets[wsname];
+                const data = (window as any).XLSX.utils.sheet_to_json(ws);
+                
+                const newLegs: RaceLeg[] = [];
+                data.forEach((row: any) => {
+                    // Excel kolonları: "Ayak" ve "Link"
+                    const legNo = parseInt(row['Ayak'] || row['Leg'] || row['ayak']);
+                    if (!isNaN(legNo)) {
+                        newLegs.push({
+                            leg: legNo,
+                            link: row['Link'] || row['URL'] || row['link'] || '',
+                            images: {}
+                        });
+                    }
+                });
+
+                if (newLegs.length > 0) {
+                    setRaceLegs(newLegs);
+                    setChatHistory(prev => [...prev, { id: Date.now().toString(), sender: 'system', text: `${newLegs.length} adet ayak verisi Excel'den başarıyla yüklendi.` }]);
+                } else {
+                     setChatHistory(prev => [...prev, { id: Date.now().toString(), sender: 'system', text: `Excel okundu ancak uygun veri bulunamadı. Kolon isimlerinin "Ayak" ve "Link" olduğundan emin olun.` }]);
+                }
+            } catch (error) {
+                console.error(error);
+                setChatHistory(prev => [...prev, { id: Date.now().toString(), sender: 'system', text: `Dosya okuma hatası.` }]);
+            }
+        };
+        reader.readAsBinaryString(file);
+    };
+
+    const updateLegLink = (legNo: number, link: string) => {
+        const updatedLegs = [...raceLegs];
+        const existingIndex = updatedLegs.findIndex(l => l.leg === legNo);
+        if (existingIndex > -1) {
+            updatedLegs[existingIndex].link = link;
+        } else {
+            updatedLegs.push({ leg: legNo, link, images: {} });
+        }
+        setRaceLegs(updatedLegs);
+    };
+
+    const getLegLink = (legNo: number) => {
+        return raceLegs.find(l => l.leg === legNo)?.link || '';
+    };
+
     const startVoiceChat = async () => {
         if (isVoiceActive) {
             sessionRef.current?.close();
@@ -149,7 +208,6 @@ const App: React.FC = () => {
         const sources = new Set<AudioBufferSourceNode>();
 
         const sessionPromise = ai.live.connect({
-            // FIX: Updated to latest native audio model version
             model: 'gemini-2.5-flash-native-audio-preview-12-2025',
             config: {
                 responseModalities: [Modality.AUDIO],
@@ -194,7 +252,6 @@ const App: React.FC = () => {
         const textToSend = userInput.trim();
         if (!textToSend || isLoading) return;
 
-        // Add user message to UI immediately
         const userMsg: ChatMessage = { id: Date.now().toString(), sender: 'user', text: textToSend };
         setChatHistory(prev => [...prev, userMsg]);
         setUserInput('');
@@ -208,7 +265,7 @@ const App: React.FC = () => {
             const result = await getPrediction(
                 raceDetails, 
                 targetLegData, 
-                chatHistory, 
+                chatHistory, // Pass updated history effectively
                 raceObservations, 
                 externalSources, 
                 textToSend
@@ -256,6 +313,50 @@ const App: React.FC = () => {
                 <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     {/* LEFT: Experts & Config */}
                     <aside className="lg:col-span-3 space-y-6">
+                         <div className="bg-gray-900/50 p-5 rounded-3xl border border-gray-800 shadow-xl">
+                            <SectionTitle 
+                                icon={<HorseIcon className="w-5 h-5" />} 
+                                title="Veri Giriş Terminali" 
+                                onActionClick={() => fileInputRef.current?.click()}
+                                actionIcon={<UploadIcon className="w-4 h-4" />}
+                            />
+                            <input 
+                                type="file" 
+                                ref={fileInputRef} 
+                                className="hidden" 
+                                accept=".xlsx, .xls" 
+                                onChange={handleFileUpload} 
+                            />
+                            <div className="space-y-3">
+                                <input type="text" placeholder="Şehir / Hipodrom" className="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 text-xs outline-none focus:border-cyan-500" value={raceDetails.location} onChange={e => setRaceDetails({...raceDetails, location: e.target.value})} />
+                                <input type="text" placeholder="Genel Program URL" className="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 text-[10px] text-cyan-500 outline-none" value={raceDetails.programUrl} onChange={e => setRaceDetails({...raceDetails, programUrl: e.target.value})} />
+                                
+                                <div className="mt-4 border-t border-gray-800 pt-3">
+                                    <div className="flex justify-between items-center mb-2 cursor-pointer" onClick={() => setShowLegConfig(!showLegConfig)}>
+                                        <span className="text-[10px] font-bold text-gray-500 uppercase">Detaylı Ayak Verileri</span>
+                                        <ChevronDownIcon className={`w-3 h-3 text-gray-500 transition-transform ${showLegConfig ? 'rotate-180' : ''}`} />
+                                    </div>
+                                    
+                                    {showLegConfig && (
+                                        <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                                            {[1,2,3,4,5,6].map(leg => (
+                                                <div key={leg} className="flex gap-2 items-center">
+                                                    <span className="text-[9px] w-4 text-gray-600 font-bold">{leg}.</span>
+                                                    <input 
+                                                        type="text" 
+                                                        placeholder={`${leg}. Ayak Linki`} 
+                                                        className="flex-grow bg-gray-950 border border-gray-800 rounded-lg p-2 text-[9px] outline-none focus:border-cyan-500" 
+                                                        value={getLegLink(leg)}
+                                                        onChange={e => updateLegLink(leg, e.target.value)}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
                         <div className="bg-gray-900/50 p-5 rounded-3xl border border-gray-800 shadow-xl backdrop-blur-sm">
                             <SectionTitle 
                                 icon={<ChartBarIcon className="w-5 h-5" />} 
@@ -299,15 +400,6 @@ const App: React.FC = () => {
                                         <div className="w-2 h-2 rounded-full bg-green-500"></div>
                                     </div>
                                 ))}
-                            </div>
-                        </div>
-
-                        <div className="bg-gray-900/50 p-5 rounded-3xl border border-gray-800 shadow-xl">
-                            <SectionTitle icon={<HorseIcon className="w-5 h-5" />} title="Yarış Girişi" />
-                            <div className="space-y-3">
-                                <input type="text" placeholder="Şehir" className="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 text-xs outline-none focus:border-cyan-500" value={raceDetails.location} onChange={e => setRaceDetails({...raceDetails, location: e.target.value})} />
-                                <input type="text" placeholder="Program URL (TJK / Liderform)" className="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 text-[10px] text-cyan-500 outline-none" value={raceDetails.programUrl} onChange={e => setRaceDetails({...raceDetails, programUrl: e.target.value})} />
-                                <button onClick={() => setIsRaceDetailsSet(!isRaceDetailsSet)} className={`w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${isRaceDetailsSet ? 'bg-gray-800 text-gray-500' : 'bg-cyan-600 text-white'}`}>{isRaceDetailsSet ? 'Kilidi Aç' : 'Sistemi Kilitle'}</button>
                             </div>
                         </div>
                     </aside>
